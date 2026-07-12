@@ -1,4 +1,6 @@
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
+
+use crate::ansi;
 
 /// The active search: compiled pattern plus the direction it was started in.
 #[derive(Debug, Clone)]
@@ -7,18 +9,24 @@ pub struct Search {
     pub backwards: bool,
 }
 
+/// Compile with smart case: an all-lowercase pattern matches case-insensitively,
+/// any uppercase letter makes the search case-sensitive.
 pub fn compile(pattern: &str) -> Result<Regex, regex::Error> {
-    Regex::new(pattern)
+    RegexBuilder::new(pattern)
+        .case_insensitive(!pattern.chars().any(|c| c.is_uppercase()))
+        .build()
 }
 
 /// Find the first matching line at or after/before `start` (inclusive).
+/// Lines are matched on their visible text, ignoring ANSI escapes.
 pub fn find(lines: &[String], start: usize, backwards: bool, re: &Regex) -> Option<usize> {
+    let matches = |i: &usize| re.is_match(&ansi::strip(&lines[*i]));
     if backwards {
         (0..=start.min(lines.len().saturating_sub(1)))
             .rev()
-            .find(|&i| re.is_match(&lines[i]))
+            .find(matches)
     } else {
-        (start..lines.len()).find(|&i| re.is_match(&lines[i]))
+        (start..lines.len()).find(matches)
     }
 }
 
@@ -81,6 +89,23 @@ mod tests {
         // multi-byte prefix shifts byte offsets but not char indices
         let re = compile("luť").unwrap();
         assert_eq!(char_spans("žluťoučký", &re), vec![(1, 4)]);
+    }
+
+    #[test]
+    fn smart_case() {
+        let ls = lines(&["Alpha", "beta"]);
+        assert_eq!(find(&ls, 0, false, &compile("alpha").unwrap()), Some(0));
+        assert_eq!(find(&ls, 0, false, &compile("Alpha").unwrap()), Some(0));
+        assert_eq!(find(&ls, 0, false, &compile("Beta").unwrap()), None);
+    }
+
+    #[test]
+    fn matches_ignore_ansi_escapes() {
+        let ls = vec!["\x1b[31mcolored\x1b[0m line".to_string()];
+        assert_eq!(
+            find(&ls, 0, false, &compile("colored line").unwrap()),
+            Some(0)
+        );
     }
 
     #[test]

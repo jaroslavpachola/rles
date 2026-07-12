@@ -34,6 +34,16 @@ impl Source {
         })
     }
 
+    /// The built-in key reference shown by `h`.
+    pub fn help() -> Self {
+        Self {
+            name: "(help)".to_owned(),
+            path: None,
+            lines: HELP.lines().map(str::to_owned).collect(),
+            saved: (0, 0),
+        }
+    }
+
     /// Re-read the backing file (used by follow mode).
     pub fn reload(&mut self) -> io::Result<()> {
         let Some(path) = &self.path else {
@@ -44,6 +54,42 @@ impl Source {
         Ok(())
     }
 }
+
+const HELP: &str = "\
+                        rles — key reference
+
+  MOVING
+    j  DOWN  ENTER  ctrl-e    one line down
+    k  UP    ctrl-y           one line up
+    SPACE  f  PGDN  ctrl-f    page down
+    b  PGUP  ctrl-b           page up
+    d  ctrl-d                 half page down
+    u  ctrl-u                 half page up
+    LEFT  RIGHT               scroll horizontally
+    g  <  HOME                go to top        (with count: go to line)
+    G  >  END                 go to bottom     (with count: go to line)
+    p  %                      go to percent of file
+    Most commands accept a count prefix, e.g. 12j or 50G.
+
+  SEARCHING
+    /pattern                  search forward  (regex, smart case)
+    ?pattern                  search backward
+    n  N                      repeat search / opposite direction
+
+  FILES
+    :n  :p                    next / previous file
+    =  ctrl-g                 file name and position
+    F                         follow file like tail -f (any key stops)
+
+  MARKS
+    m<letter>                 set mark
+    '<letter>                 go to mark ('' = previous position)
+
+  OPTIONS
+    -N                        toggle line numbers
+
+  q  Q  :q                    quit
+";
 
 fn split_lines(bytes: &[u8]) -> Vec<String> {
     String::from_utf8_lossy(bytes)

@@ -29,6 +29,7 @@ pub enum Command {
     Follow,
     MarkSet,
     MarkGoto,
+    Help,
     Repaint,
     None,
 }
@@ -72,6 +73,7 @@ pub fn map_key(key: KeyEvent) -> Command {
         KeyCode::Char('?') => Command::SearchBackward,
         KeyCode::Char('n') => Command::NextMatch,
         KeyCode::Char('N') => Command::PrevMatch,
+        KeyCode::Char('h') | KeyCode::Char('H') => Command::Help,
         KeyCode::Char('r') => Command::Repaint,
         _ => Command::None,
     }
@@ -137,6 +139,7 @@ mod tests {
         assert_eq!(map_key(key(KeyCode::Char('F'))), Command::Follow);
         assert_eq!(map_key(key(KeyCode::Char('m'))), Command::MarkSet);
         assert_eq!(map_key(key(KeyCode::Char('\''))), Command::MarkGoto);
+        assert_eq!(map_key(key(KeyCode::Char('h'))), Command::Help);
     }
 
     #[test]

@@ -6,11 +6,19 @@ A small terminal pager written in Rust — a `less` replacement.
 
 ```sh
 rles README.md
-rles *.log        # switch files with :n and :p
-git log | rles
+rles *.log                 # switch files with :n and :p
+git log --color | rles     # ANSI colors render as-is
 ```
 
 When stdout is not a terminal, `rles` behaves like `cat`, so it is safe in pipelines.
+
+## Features
+
+- less-compatible movement, search, marks, and multi-file keys (`h` shows the full reference)
+- regex search with smart case and highlighting of all on-screen matches
+- ANSI color passthrough — colored input renders correctly, other escape sequences are filtered out
+- follow mode (`F`) like `tail -f`
+- line numbers, horizontal scrolling, numeric count prefixes
 
 ## Install
 
@@ -33,8 +41,8 @@ Prebuilt binaries are attached to [GitHub releases](https://github.com/jaroslavp
 | `u`, `ctrl-u` | half page up |
 | `g`, `<`, `Home` | go to top |
 | `G`, `>`, `End` | go to bottom |
-| `/pattern` | search forward (regex) |
-| `?pattern` | search backward (regex) |
+| `/pattern` | search forward (regex, smart case) |
+| `?pattern` | search backward (regex, smart case) |
 | `n` / `N` | repeat search / in opposite direction |
 | `←` / `→` | scroll horizontally |
 | `<n>g`, `<n>G` | go to line n |
@@ -45,6 +53,7 @@ Prebuilt binaries are attached to [GitHub releases](https://github.com/jaroslavp
 | `F` | follow the file like `tail -f` (any key stops) |
 | `m<letter>` | set a mark at the current position |
 | `'<letter>` | jump to a mark (`''` returns to the previous position) |
+| `h`, `H` | help screen |
 
 Most movement keys accept a numeric count prefix, e.g. `12j` scrolls twelve lines.
 
@@ -57,6 +66,7 @@ Most movement keys accept a numeric count prefix, e.g. `12j` scrolls twelve line
 ## Notes
 
 - Long lines are chopped at the screen edge; use `←`/`→` to scroll horizontally.
+- Searches are case-insensitive unless the pattern contains an uppercase letter.
 - Unix terminals are the supported target.
 
 ## License

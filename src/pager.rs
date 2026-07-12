@@ -10,6 +10,7 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
 };
 
+use crate::ansi;
 use crate::commands::{Command, map_key};
 use crate::search::{self, Search};
 use crate::source::Source;
@@ -150,6 +151,7 @@ impl App {
             Command::Follow => self.follow(out)?,
             Command::MarkSet => self.mark_set(out)?,
             Command::MarkGoto => self.mark_goto(out)?,
+            Command::Help => self.show_help(out)?,
             Command::Digit(_) => unreachable!(),
             Command::Repaint | Command::None => {}
         }
@@ -425,41 +427,57 @@ impl App {
     fn draw_content_line(&self, out: &mut impl Write, line: &str) -> io::Result<()> {
         let (left, width) = (self.view.left, self.content_width());
         let spans = match &self.search {
-            Some(s) => search::char_spans(line, &s.re),
+            Some(s) => search::char_spans(&ansi::strip(line), &s.re),
             None => Vec::new(),
         };
-        if spans.is_empty() {
-            return queue!(out, Print(clip(line, left, width)));
-        }
-        for (text, highlighted) in segments(line, left, width, &spans) {
-            if highlighted {
-                draw_reverse(out, &text)?;
-            } else {
-                queue!(out, Print(text))?;
+        queue!(out, Print(ansi::render_window(line, left, width, &spans)))
+    }
+
+    /// Show the key reference in a scrollable overlay until q or Esc.
+    fn show_help(&mut self, out: &mut impl Write) -> io::Result<()> {
+        let saved_view = self.view;
+        let saved_current = self.current;
+        let saved_search = self.search.take();
+        self.sources.push(Source::help());
+        self.current = self.sources.len() - 1;
+        self.view.top = 0;
+        self.view.left = 0;
+
+        loop {
+            self.draw_with_prompt(out, Some("HELP — press q to return"))?;
+            let ev = event::read()?;
+            let total = self.lines().len();
+            match ev {
+                Event::Key(key) if key.kind != KeyEventKind::Release => match map_key(key) {
+                    Command::Quit => break,
+                    Command::LineDown => self.view.scroll(1, total),
+                    Command::LineUp => self.view.scroll(-1, total),
+                    Command::PageDown => self.view.page_down(total),
+                    Command::PageUp => self.view.page_up(total),
+                    Command::HalfDown => self.view.half_down(total),
+                    Command::HalfUp => self.view.half_up(total),
+                    Command::GoTop => self.view.go_top(),
+                    Command::GoBottom => self.view.go_bottom(total),
+                    _ => {
+                        if key.code == KeyCode::Esc {
+                            break;
+                        }
+                    }
+                },
+                Event::Resize(c, r) => {
+                    self.view
+                        .resize(r.saturating_sub(1).max(1) as usize, c as usize, total);
+                }
+                _ => {}
             }
         }
+
+        self.sources.pop();
+        self.current = saved_current;
+        self.view = saved_view;
+        self.search = saved_search;
         Ok(())
     }
-}
-
-/// Split the visible window (chars `left..left+width`) of `line` into runs of
-/// (text, highlighted), where `spans` are sorted, non-overlapping
-/// (start, end) char ranges over the whole line.
-fn segments(
-    line: &str,
-    left: usize,
-    width: usize,
-    spans: &[(usize, usize)],
-) -> Vec<(String, bool)> {
-    let mut result: Vec<(String, bool)> = Vec::new();
-    for (idx, ch) in line.chars().enumerate().skip(left).take(width) {
-        let highlighted = spans.iter().any(|&(s, e)| idx >= s && idx < e);
-        match result.last_mut() {
-            Some((text, h)) if *h == highlighted => text.push(ch),
-            _ => result.push((ch.to_string(), highlighted)),
-        }
-    }
-    result
 }
 
 fn draw_reverse(out: &mut impl Write, text: &str) -> io::Result<()> {
@@ -517,7 +535,7 @@ fn clip(line: &str, left: usize, width: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{clip, segments};
+    use super::clip;
 
     #[test]
     fn clip_truncates_by_chars() {
@@ -531,45 +549,5 @@ mod tests {
     fn clip_honours_left_offset() {
         assert_eq!(clip("abcdef", 2, 3), "cde");
         assert_eq!(clip("abcdef", 10, 3), "");
-    }
-
-    #[test]
-    fn segments_split_on_span_borders() {
-        let spans = vec![(2, 4)];
-        assert_eq!(
-            segments("abcdef", 0, 80, &spans),
-            vec![
-                ("ab".to_string(), false),
-                ("cd".to_string(), true),
-                ("ef".to_string(), false)
-            ]
-        );
-    }
-
-    #[test]
-    fn segments_respect_width() {
-        let spans = vec![(2, 4)];
-        assert_eq!(
-            segments("abcdef", 0, 3, &spans),
-            vec![("ab".to_string(), false), ("c".to_string(), true)]
-        );
-    }
-
-    #[test]
-    fn segments_shifted_by_left_offset() {
-        let spans = vec![(2, 4)];
-        assert_eq!(
-            segments("abcdef", 3, 80, &spans),
-            vec![("d".to_string(), true), ("ef".to_string(), false)]
-        );
-    }
-
-    #[test]
-    fn segments_whole_line_highlighted() {
-        let spans = vec![(0, 3)];
-        assert_eq!(
-            segments("abc", 0, 80, &spans),
-            vec![("abc".to_string(), true)]
-        );
     }
 }
