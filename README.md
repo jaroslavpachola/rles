@@ -6,6 +6,7 @@ A small terminal pager written in Rust — a `less` replacement.
 
 ```sh
 rles README.md
+rles *.log        # switch files with :n and :p
 git log | rles
 ```
 
@@ -39,6 +40,11 @@ Prebuilt binaries are attached to [GitHub releases](https://github.com/jaroslavp
 | `<n>g`, `<n>G` | go to line n |
 | `<n>p`, `<n>%` | go to n percent of the file |
 | `-N` | toggle line numbers at runtime |
+| `:n` / `:p` | next / previous file |
+| `=`, `ctrl-g` | file name, position, and file count |
+| `F` | follow the file like `tail -f` (any key stops) |
+| `m<letter>` | set a mark at the current position |
+| `'<letter>` | jump to a mark (`''` returns to the previous position) |
 
 Most movement keys accept a numeric count prefix, e.g. `12j` scrolls twelve lines.
 

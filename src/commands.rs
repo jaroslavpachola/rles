@@ -23,6 +23,12 @@ pub enum Command {
     Digit(u32),
     /// `-` followed by an option letter toggles that option at runtime.
     OptionPrompt,
+    /// `:` followed by n/p/q — file switching, quit.
+    ColonPrompt,
+    FileInfo,
+    Follow,
+    MarkSet,
+    MarkGoto,
     Repaint,
     None,
 }
@@ -38,6 +44,7 @@ pub fn map_key(key: KeyEvent) -> Command {
             KeyCode::Char('e') | KeyCode::Char('n') => Command::LineDown,
             KeyCode::Char('y') | KeyCode::Char('p') | KeyCode::Char('k') => Command::LineUp,
             KeyCode::Char('l') => Command::Repaint,
+            KeyCode::Char('g') => Command::FileInfo,
             _ => Command::None,
         };
     }
@@ -56,6 +63,11 @@ pub fn map_key(key: KeyEvent) -> Command {
         KeyCode::Right => Command::ScrollRight,
         KeyCode::Char('p') | KeyCode::Char('%') => Command::GoPercent,
         KeyCode::Char('-') => Command::OptionPrompt,
+        KeyCode::Char(':') => Command::ColonPrompt,
+        KeyCode::Char('=') => Command::FileInfo,
+        KeyCode::Char('F') => Command::Follow,
+        KeyCode::Char('m') => Command::MarkSet,
+        KeyCode::Char('\'') => Command::MarkGoto,
         KeyCode::Char('/') => Command::SearchForward,
         KeyCode::Char('?') => Command::SearchBackward,
         KeyCode::Char('n') => Command::NextMatch,
@@ -115,6 +127,16 @@ mod tests {
         assert_eq!(map_key(key(KeyCode::Char('p'))), Command::GoPercent);
         assert_eq!(map_key(key(KeyCode::Char('%'))), Command::GoPercent);
         assert_eq!(map_key(key(KeyCode::Char('-'))), Command::OptionPrompt);
+    }
+
+    #[test]
+    fn file_and_mark_keys() {
+        assert_eq!(map_key(key(KeyCode::Char(':'))), Command::ColonPrompt);
+        assert_eq!(map_key(key(KeyCode::Char('='))), Command::FileInfo);
+        assert_eq!(map_key(ctrl('g')), Command::FileInfo);
+        assert_eq!(map_key(key(KeyCode::Char('F'))), Command::Follow);
+        assert_eq!(map_key(key(KeyCode::Char('m'))), Command::MarkSet);
+        assert_eq!(map_key(key(KeyCode::Char('\''))), Command::MarkGoto);
     }
 
     #[test]

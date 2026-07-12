@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::io::{self, Write};
+use std::time::Duration;
 
 use crossterm::{
     cursor,
@@ -10,6 +12,7 @@ use crossterm::{
 
 use crate::commands::{Command, map_key};
 use crate::search::{self, Search};
+use crate::source::Source;
 use crate::view::{HSCROLL_STEP, View};
 
 /// Width of the line-number gutter, matching `less -N`.
@@ -20,19 +23,19 @@ pub struct Options {
     pub line_numbers: bool,
 }
 
-pub fn run(name: &str, lines: &[String], opts: Options) -> io::Result<()> {
+pub fn run(sources: Vec<Source>, opts: Options) -> io::Result<()> {
     let mut out = io::stdout().lock();
     terminal::enable_raw_mode()?;
     execute!(out, terminal::EnterAlternateScreen, cursor::Hide)?;
-    let result = event_loop(&mut out, name, lines, opts);
+    let result = event_loop(&mut out, sources, opts);
     execute!(out, cursor::Show, terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
     result
 }
 
-struct App<'a> {
-    name: &'a str,
-    lines: &'a [String],
+struct App {
+    sources: Vec<Source>,
+    current: usize,
     view: View,
     search: Option<Search>,
     message: Option<String>,
@@ -40,13 +43,15 @@ struct App<'a> {
     line_numbers: bool,
     /// Digits of a pending numeric count prefix.
     pending: String,
+    /// Named positions: mark letter -> (source index, top line).
+    marks: HashMap<char, (usize, usize)>,
 }
 
-fn event_loop(out: &mut impl Write, name: &str, lines: &[String], opts: Options) -> io::Result<()> {
+fn event_loop(out: &mut impl Write, sources: Vec<Source>, opts: Options) -> io::Result<()> {
     let (cols, rows) = terminal::size()?;
     let mut app = App {
-        name,
-        lines,
+        sources,
+        current: 0,
         // Last row is the prompt line.
         view: View::new(rows.saturating_sub(1).max(1) as usize, cols as usize),
         search: None,
@@ -54,6 +59,7 @@ fn event_loop(out: &mut impl Write, name: &str, lines: &[String], opts: Options)
         show_name: true,
         line_numbers: opts.line_numbers,
         pending: String::new(),
+        marks: HashMap::new(),
     };
 
     loop {
@@ -67,7 +73,7 @@ fn event_loop(out: &mut impl Write, name: &str, lines: &[String], opts: Options)
                 }
             }
             Event::Resize(c, r) => {
-                let total = app.lines.len();
+                let total = app.lines().len();
                 app.view
                     .resize(r.saturating_sub(1).max(1) as usize, c as usize, total);
             }
@@ -76,7 +82,20 @@ fn event_loop(out: &mut impl Write, name: &str, lines: &[String], opts: Options)
     }
 }
 
-impl App<'_> {
+impl App {
+    fn lines(&self) -> &[String] {
+        &self.sources[self.current].lines
+    }
+
+    fn name(&self) -> &str {
+        &self.sources[self.current].name
+    }
+
+    /// Remember the current position as the `'` mark before a jump.
+    fn remember_position(&mut self) {
+        self.marks.insert('\'', (self.current, self.view.top));
+    }
+
     /// Returns false when the pager should quit.
     fn handle_key(&mut self, out: &mut impl Write, cmd: Command) -> io::Result<bool> {
         if let Command::Digit(d) = cmd {
@@ -88,7 +107,20 @@ impl App<'_> {
         let count: Option<usize> = self.pending.parse().ok();
         self.pending.clear();
 
-        let total = self.lines.len();
+        if matches!(
+            cmd,
+            Command::GoTop
+                | Command::GoBottom
+                | Command::GoPercent
+                | Command::SearchForward
+                | Command::SearchBackward
+                | Command::NextMatch
+                | Command::PrevMatch
+        ) {
+            self.remember_position();
+        }
+
+        let total = self.lines().len();
         match cmd {
             Command::Quit => return Ok(false),
             Command::LineDown => self.view.scroll(count.unwrap_or(1) as isize, total),
@@ -113,18 +145,134 @@ impl App<'_> {
             Command::NextMatch => self.repeat_search(false, count.unwrap_or(1)),
             Command::PrevMatch => self.repeat_search(true, count.unwrap_or(1)),
             Command::OptionPrompt => self.prompt_option(out)?,
+            Command::ColonPrompt => return self.prompt_colon(out),
+            Command::FileInfo => self.file_info(),
+            Command::Follow => self.follow(out)?,
+            Command::MarkSet => self.mark_set(out)?,
+            Command::MarkGoto => self.mark_goto(out)?,
             Command::Digit(_) => unreachable!(),
             Command::Repaint | Command::None => {}
         }
         Ok(true)
     }
 
-    fn prompt_option(&mut self, out: &mut impl Write) -> io::Result<()> {
+    fn file_info(&mut self) {
+        let total = self.lines().len();
+        let last = (self.view.top + self.view.height).min(total);
+        self.message = Some(format!(
+            "{} lines {}-{}/{} (file {} of {})",
+            self.name(),
+            (self.view.top + 1).min(total),
+            last,
+            total,
+            self.current + 1,
+            self.sources.len()
+        ));
+    }
+
+    /// `:` prompt — n(ext file), p(revious file), q(uit).
+    fn prompt_colon(&mut self, out: &mut impl Write) -> io::Result<bool> {
+        let Some(key) = self.prompt_char(out, ":")? else {
+            return Ok(true);
+        };
+        match key {
+            'n' => self.switch_file(1),
+            'p' => self.switch_file(-1),
+            'q' => return Ok(false),
+            c => self.message = Some(format!("Unknown command: :{c}")),
+        }
+        Ok(true)
+    }
+
+    fn switch_file(&mut self, delta: isize) {
+        let target = self.current as isize + delta;
+        if target < 0 || target >= self.sources.len() as isize {
+            self.message = Some(
+                if delta > 0 {
+                    "No next file"
+                } else {
+                    "No previous file"
+                }
+                .into(),
+            );
+            return;
+        }
+        self.sources[self.current].saved = (self.view.top, self.view.left);
+        self.current = target as usize;
+        let (top, left) = self.sources[self.current].saved;
+        let total = self.lines().len();
+        self.view.top = top.min(self.view.max_top(total));
+        self.view.left = left;
+        self.file_info();
+    }
+
+    fn mark_set(&mut self, out: &mut impl Write) -> io::Result<()> {
+        let Some(c) = self.prompt_char(out, "mark: ")? else {
+            return Ok(());
+        };
+        if c.is_ascii_alphabetic() {
+            self.marks.insert(c, (self.current, self.view.top));
+        } else {
+            self.message = Some("Marks must be letters".into());
+        }
+        Ok(())
+    }
+
+    fn mark_goto(&mut self, out: &mut impl Write) -> io::Result<()> {
+        let Some(c) = self.prompt_char(out, "goto mark: ")? else {
+            return Ok(());
+        };
+        match self.marks.get(&c).copied() {
+            Some((source, top)) => {
+                self.remember_position();
+                if source != self.current {
+                    self.sources[self.current].saved = (self.view.top, self.view.left);
+                    self.current = source;
+                }
+                let total = self.lines().len();
+                self.view.top = top.min(self.view.max_top(total));
+            }
+            None => self.message = Some(format!("No mark: {c}")),
+        }
+        Ok(())
+    }
+
+    /// Follow the current file like `tail -f` until a key is pressed.
+    fn follow(&mut self, out: &mut impl Write) -> io::Result<()> {
+        if self.sources[self.current].path.is_none() {
+            self.message = Some("Cannot follow standard input".into());
+            return Ok(());
+        }
+        loop {
+            let total = self.lines().len();
+            self.view.go_bottom(total);
+            self.draw_with_prompt(out, Some("Waiting for data... (press any key to stop)"))?;
+            if event::poll(Duration::from_millis(300))? {
+                match event::read()? {
+                    Event::Key(key) if key.kind != KeyEventKind::Release => return Ok(()),
+                    Event::Resize(c, r) => {
+                        self.view.resize(
+                            r.saturating_sub(1).max(1) as usize,
+                            c as usize,
+                            self.lines().len(),
+                        );
+                    }
+                    _ => {}
+                }
+            } else if let Err(err) = self.sources[self.current].reload() {
+                self.message = Some(format!("Cannot follow: {err}"));
+                return Ok(());
+            }
+        }
+    }
+
+    /// Show a one-line prompt and read a single character; None on cancel.
+    fn prompt_char(&mut self, out: &mut impl Write, prompt: &str) -> io::Result<Option<char>> {
         queue!(
             out,
             cursor::MoveTo(0, self.view.height as u16),
             Clear(ClearType::CurrentLine),
-            Print("-")
+            Print(prompt)
         )?;
         out.flush()?;
         loop {
@@ -134,24 +282,36 @@ impl App<'_> {
             if key.kind == KeyEventKind::Release {
                 continue;
             }
-            match key.code {
-                KeyCode::Char('N') => {
-                    self.line_numbers = !self.line_numbers;
-                    self.message = Some(
-                        if self.line_numbers {
-                            "Line numbers on"
-                        } else {
-                            "Line numbers off"
-                        }
-                        .into(),
-                    );
-                }
-                KeyCode::Esc => {}
-                KeyCode::Char(c) => self.message = Some(format!("Unknown option: -{c}")),
-                _ => {}
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                return Ok(None);
             }
-            return Ok(());
+            match key.code {
+                KeyCode::Char(c) => return Ok(Some(c)),
+                KeyCode::Esc => return Ok(None),
+                _ => return Ok(None),
+            }
         }
+    }
+
+    fn prompt_option(&mut self, out: &mut impl Write) -> io::Result<()> {
+        let Some(c) = self.prompt_char(out, "-")? else {
+            return Ok(());
+        };
+        match c {
+            'N' => {
+                self.line_numbers = !self.line_numbers;
+                self.message = Some(
+                    if self.line_numbers {
+                        "Line numbers on"
+                    } else {
+                        "Line numbers off"
+                    }
+                    .into(),
+                );
+            }
+            c => self.message = Some(format!("Unknown option: -{c}")),
+        }
+        Ok(())
     }
 
     fn prompt_search(&mut self, out: &mut impl Write, backwards: bool) -> io::Result<()> {
@@ -205,28 +365,33 @@ impl App<'_> {
     fn run_search(&mut self, backwards: bool) {
         let Some(s) = &self.search else { return };
         let top = self.view.top;
+        let lines = self.lines();
         let found = if backwards {
             top.checked_sub(1)
-                .and_then(|start| search::find(self.lines, start, true, &s.re))
+                .and_then(|start| search::find(lines, start, true, &s.re))
         } else {
-            search::find(self.lines, top + 1, false, &s.re)
+            search::find(lines, top + 1, false, &s.re)
         };
         match found {
             Some(line) => {
-                self.view.top = line.min(self.view.max_top(self.lines.len()));
+                self.view.top = line.min(self.view.max_top(self.lines().len()));
             }
             None => self.message = Some("Pattern not found".into()),
         }
     }
 
     fn draw(&self, out: &mut impl Write) -> io::Result<()> {
+        self.draw_with_prompt(out, None)
+    }
+
+    fn draw_with_prompt(&self, out: &mut impl Write, prompt: Option<&str>) -> io::Result<()> {
         for row in 0..self.view.height {
             queue!(
                 out,
                 cursor::MoveTo(0, row as u16),
                 Clear(ClearType::CurrentLine)
             )?;
-            match self.lines.get(self.view.top + row) {
+            match self.lines().get(self.view.top + row) {
                 Some(line) => {
                     if self.line_numbers {
                         queue!(out, Print(format!("{:>7} ", self.view.top + row + 1)))?;
@@ -241,14 +406,16 @@ impl App<'_> {
             cursor::MoveTo(0, self.view.height as u16),
             Clear(ClearType::CurrentLine)
         )?;
-        if let Some(msg) = &self.message {
+        if let Some(text) = prompt {
+            draw_reverse(out, &clip(text, 0, self.view.width))?;
+        } else if let Some(msg) = &self.message {
             draw_reverse(out, &clip(msg, 0, self.view.width))?;
         } else if !self.pending.is_empty() {
             queue!(out, Print(format!(":{}", self.pending)))?;
-        } else if self.view.at_end(self.lines.len()) {
+        } else if self.view.at_end(self.lines().len()) {
             draw_reverse(out, "(END)")?;
         } else if self.show_name {
-            draw_reverse(out, &clip(self.name, 0, self.view.width))?;
+            draw_reverse(out, &clip(self.name(), 0, self.view.width))?;
         } else {
             queue!(out, Print(":"))?;
         }

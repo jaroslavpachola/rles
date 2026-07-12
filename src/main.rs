@@ -1,15 +1,19 @@
 mod commands;
 mod pager;
 mod search;
+mod source;
 mod view;
 
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
-const USAGE: &str = "\
-usage: rles [OPTIONS] [FILE]
+use source::Source;
 
-A small terminal pager. Reads FILE, or standard input when no FILE is given.
+const USAGE: &str = "\
+usage: rles [OPTIONS] [FILE...]
+
+A small terminal pager. Reads FILEs, or standard input when no FILE is given.
+With several files, switch between them with :n and :p.
 
 options:
   -N, --line-numbers    show line numbers (toggle at runtime with -N)
@@ -39,18 +43,14 @@ fn main() -> ExitCode {
         }
     }
 
-    let (name, content) = match read_input(files.first().map(String::as_str)) {
-        Ok(input) => input,
-        Err(err) => {
-            eprintln!("rles: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
+    if files.is_empty() && io::stdin().is_terminal() {
+        eprintln!("rles: missing filename (\"rles --help\" for help)");
+        return ExitCode::FAILURE;
+    }
 
     // Like less: when stdout is not a terminal, act as cat.
     if !io::stdout().is_terminal() {
-        let mut out = io::stdout().lock();
-        return match out.write_all(content.as_bytes()) {
+        return match cat(&files) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 eprintln!("rles: {err}");
@@ -59,8 +59,27 @@ fn main() -> ExitCode {
         };
     }
 
-    let lines: Vec<String> = content.lines().map(str::to_owned).collect();
-    match pager::run(&name, &lines, opts) {
+    let mut sources = Vec::new();
+    for file in &files {
+        match Source::from_file(file) {
+            Ok(source) => sources.push(source),
+            Err(err) => {
+                eprintln!("rles: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    if sources.is_empty() {
+        match Source::from_stdin() {
+            Ok(source) => sources.push(source),
+            Err(err) => {
+                eprintln!("rles: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    match pager::run(sources, opts) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("rles: {err}");
@@ -69,29 +88,17 @@ fn main() -> ExitCode {
     }
 }
 
-fn read_input(path: Option<&str>) -> io::Result<(String, String)> {
-    match path {
-        Some(path) => {
-            let bytes = std::fs::read(path)
-                .map_err(|e| io::Error::new(e.kind(), format!("{path}: {e}")))?;
-            Ok((
-                path.to_owned(),
-                String::from_utf8_lossy(&bytes).into_owned(),
-            ))
-        }
-        None => {
-            let stdin = io::stdin();
-            if stdin.is_terminal() {
-                return Err(io::Error::other(
-                    "missing filename (\"rles --help\" for help)",
-                ));
-            }
-            let mut buf = Vec::new();
-            stdin.lock().read_to_end(&mut buf)?;
-            Ok((
-                "(stdin)".to_owned(),
-                String::from_utf8_lossy(&buf).into_owned(),
-            ))
-        }
+/// Copy inputs to stdout byte for byte (pipeline mode).
+fn cat(files: &[String]) -> io::Result<()> {
+    let mut out = io::stdout().lock();
+    if files.is_empty() {
+        io::copy(&mut io::stdin().lock(), &mut out)?;
+        return Ok(());
     }
+    for file in files {
+        let bytes =
+            std::fs::read(file).map_err(|e| io::Error::new(e.kind(), format!("{file}: {e}")))?;
+        out.write_all(&bytes)?;
+    }
+    Ok(())
 }
