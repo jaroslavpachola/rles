@@ -1,5 +1,6 @@
 mod commands;
 mod pager;
+mod search;
 mod view;
 
 use std::io::{self, IsTerminal, Read, Write};

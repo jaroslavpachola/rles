@@ -12,6 +12,10 @@ pub enum Command {
     HalfUp,
     GoTop,
     GoBottom,
+    SearchForward,
+    SearchBackward,
+    NextMatch,
+    PrevMatch,
     Repaint,
     None,
 }
@@ -40,6 +44,10 @@ pub fn map_key(key: KeyEvent) -> Command {
         KeyCode::Char('u') => Command::HalfUp,
         KeyCode::Char('g') | KeyCode::Char('<') | KeyCode::Home => Command::GoTop,
         KeyCode::Char('G') | KeyCode::Char('>') | KeyCode::End => Command::GoBottom,
+        KeyCode::Char('/') => Command::SearchForward,
+        KeyCode::Char('?') => Command::SearchBackward,
+        KeyCode::Char('n') => Command::NextMatch,
+        KeyCode::Char('N') => Command::PrevMatch,
         KeyCode::Char('r') => Command::Repaint,
         _ => Command::None,
     }
@@ -76,6 +84,14 @@ mod tests {
         assert_eq!(map_key(ctrl('b')), Command::PageUp);
         assert_eq!(map_key(ctrl('d')), Command::HalfDown);
         assert_eq!(map_key(ctrl('u')), Command::HalfUp);
+    }
+
+    #[test]
+    fn search_keys() {
+        assert_eq!(map_key(key(KeyCode::Char('/'))), Command::SearchForward);
+        assert_eq!(map_key(key(KeyCode::Char('?'))), Command::SearchBackward);
+        assert_eq!(map_key(key(KeyCode::Char('n'))), Command::NextMatch);
+        assert_eq!(map_key(key(KeyCode::Char('N'))), Command::PrevMatch);
     }
 
     #[test]

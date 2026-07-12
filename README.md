@@ -32,6 +32,9 @@ Prebuilt binaries are attached to [GitHub releases](https://github.com/jaroslavp
 | `u`, `ctrl-u` | half page up |
 | `g`, `<`, `Home` | go to top |
 | `G`, `>`, `End` | go to bottom |
+| `/pattern` | search forward (regex) |
+| `?pattern` | search backward (regex) |
+| `n` / `N` | repeat search / in opposite direction |
 
 ## Notes
 
