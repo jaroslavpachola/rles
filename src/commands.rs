@@ -16,6 +16,13 @@ pub enum Command {
     SearchBackward,
     NextMatch,
     PrevMatch,
+    ScrollLeft,
+    ScrollRight,
+    GoPercent,
+    /// A digit of a numeric count prefix (`12j` scrolls 12 lines).
+    Digit(u32),
+    /// `-` followed by an option letter toggles that option at runtime.
+    OptionPrompt,
     Repaint,
     None,
 }
@@ -35,6 +42,7 @@ pub fn map_key(key: KeyEvent) -> Command {
         };
     }
     match key.code {
+        KeyCode::Char(c) if c.is_ascii_digit() => Command::Digit(c.to_digit(10).unwrap()),
         KeyCode::Char('q') | KeyCode::Char('Q') => Command::Quit,
         KeyCode::Char('j') | KeyCode::Down | KeyCode::Enter => Command::LineDown,
         KeyCode::Char('k') | KeyCode::Up => Command::LineUp,
@@ -44,6 +52,10 @@ pub fn map_key(key: KeyEvent) -> Command {
         KeyCode::Char('u') => Command::HalfUp,
         KeyCode::Char('g') | KeyCode::Char('<') | KeyCode::Home => Command::GoTop,
         KeyCode::Char('G') | KeyCode::Char('>') | KeyCode::End => Command::GoBottom,
+        KeyCode::Left => Command::ScrollLeft,
+        KeyCode::Right => Command::ScrollRight,
+        KeyCode::Char('p') | KeyCode::Char('%') => Command::GoPercent,
+        KeyCode::Char('-') => Command::OptionPrompt,
         KeyCode::Char('/') => Command::SearchForward,
         KeyCode::Char('?') => Command::SearchBackward,
         KeyCode::Char('n') => Command::NextMatch,
@@ -92,6 +104,17 @@ mod tests {
         assert_eq!(map_key(key(KeyCode::Char('?'))), Command::SearchBackward);
         assert_eq!(map_key(key(KeyCode::Char('n'))), Command::NextMatch);
         assert_eq!(map_key(key(KeyCode::Char('N'))), Command::PrevMatch);
+    }
+
+    #[test]
+    fn navigation_extras() {
+        assert_eq!(map_key(key(KeyCode::Char('4'))), Command::Digit(4));
+        assert_eq!(map_key(key(KeyCode::Char('0'))), Command::Digit(0));
+        assert_eq!(map_key(key(KeyCode::Left)), Command::ScrollLeft);
+        assert_eq!(map_key(key(KeyCode::Right)), Command::ScrollRight);
+        assert_eq!(map_key(key(KeyCode::Char('p'))), Command::GoPercent);
+        assert_eq!(map_key(key(KeyCode::Char('%'))), Command::GoPercent);
+        assert_eq!(map_key(key(KeyCode::Char('-'))), Command::OptionPrompt);
     }
 
     #[test]

@@ -35,10 +35,22 @@ Prebuilt binaries are attached to [GitHub releases](https://github.com/jaroslavp
 | `/pattern` | search forward (regex) |
 | `?pattern` | search backward (regex) |
 | `n` / `N` | repeat search / in opposite direction |
+| `←` / `→` | scroll horizontally |
+| `<n>g`, `<n>G` | go to line n |
+| `<n>p`, `<n>%` | go to n percent of the file |
+| `-N` | toggle line numbers at runtime |
+
+Most movement keys accept a numeric count prefix, e.g. `12j` scrolls twelve lines.
+
+## Options
+
+```
+-N, --line-numbers    show line numbers
+```
 
 ## Notes
 
-- Long lines are chopped at the screen edge (horizontal scrolling is planned).
+- Long lines are chopped at the screen edge; use `←`/`→` to scroll horizontally.
 - Unix terminals are the supported target.
 
 ## License

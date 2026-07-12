@@ -10,13 +10,21 @@ use crossterm::{
 
 use crate::commands::{Command, map_key};
 use crate::search::{self, Search};
-use crate::view::View;
+use crate::view::{HSCROLL_STEP, View};
 
-pub fn run(name: &str, lines: &[String]) -> io::Result<()> {
+/// Width of the line-number gutter, matching `less -N`.
+const GUTTER: usize = 8;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Options {
+    pub line_numbers: bool,
+}
+
+pub fn run(name: &str, lines: &[String], opts: Options) -> io::Result<()> {
     let mut out = io::stdout().lock();
     terminal::enable_raw_mode()?;
     execute!(out, terminal::EnterAlternateScreen, cursor::Hide)?;
-    let result = event_loop(&mut out, name, lines);
+    let result = event_loop(&mut out, name, lines, opts);
     execute!(out, cursor::Show, terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
     result
@@ -29,9 +37,12 @@ struct App<'a> {
     search: Option<Search>,
     message: Option<String>,
     show_name: bool,
+    line_numbers: bool,
+    /// Digits of a pending numeric count prefix.
+    pending: String,
 }
 
-fn event_loop(out: &mut impl Write, name: &str, lines: &[String]) -> io::Result<()> {
+fn event_loop(out: &mut impl Write, name: &str, lines: &[String], opts: Options) -> io::Result<()> {
     let (cols, rows) = terminal::size()?;
     let mut app = App {
         name,
@@ -41,6 +52,8 @@ fn event_loop(out: &mut impl Write, name: &str, lines: &[String]) -> io::Result<
         search: None,
         message: None,
         show_name: true,
+        line_numbers: opts.line_numbers,
+        pending: String::new(),
     };
 
     loop {
@@ -66,24 +79,79 @@ fn event_loop(out: &mut impl Write, name: &str, lines: &[String]) -> io::Result<
 impl App<'_> {
     /// Returns false when the pager should quit.
     fn handle_key(&mut self, out: &mut impl Write, cmd: Command) -> io::Result<bool> {
+        if let Command::Digit(d) = cmd {
+            if self.pending.len() < 9 {
+                self.pending.push(char::from_digit(d, 10).unwrap());
+            }
+            return Ok(true);
+        }
+        let count: Option<usize> = self.pending.parse().ok();
+        self.pending.clear();
+
         let total = self.lines.len();
         match cmd {
             Command::Quit => return Ok(false),
-            Command::LineDown => self.view.scroll(1, total),
-            Command::LineUp => self.view.scroll(-1, total),
+            Command::LineDown => self.view.scroll(count.unwrap_or(1) as isize, total),
+            Command::LineUp => self.view.scroll(-(count.unwrap_or(1) as isize), total),
             Command::PageDown => self.view.page_down(total),
             Command::PageUp => self.view.page_up(total),
             Command::HalfDown => self.view.half_down(total),
             Command::HalfUp => self.view.half_up(total),
-            Command::GoTop => self.view.go_top(),
-            Command::GoBottom => self.view.go_bottom(total),
+            Command::GoTop => match count {
+                Some(n) => self.view.go_line(n, total),
+                None => self.view.go_top(),
+            },
+            Command::GoBottom => match count {
+                Some(n) => self.view.go_line(n, total),
+                None => self.view.go_bottom(total),
+            },
+            Command::GoPercent => self.view.go_percent(count.unwrap_or(0), total),
+            Command::ScrollLeft => self.view.scroll_left(count.unwrap_or(HSCROLL_STEP)),
+            Command::ScrollRight => self.view.scroll_right(count.unwrap_or(HSCROLL_STEP)),
             Command::SearchForward => self.prompt_search(out, false)?,
             Command::SearchBackward => self.prompt_search(out, true)?,
-            Command::NextMatch => self.repeat_search(false),
-            Command::PrevMatch => self.repeat_search(true),
+            Command::NextMatch => self.repeat_search(false, count.unwrap_or(1)),
+            Command::PrevMatch => self.repeat_search(true, count.unwrap_or(1)),
+            Command::OptionPrompt => self.prompt_option(out)?,
+            Command::Digit(_) => unreachable!(),
             Command::Repaint | Command::None => {}
         }
         Ok(true)
+    }
+
+    fn prompt_option(&mut self, out: &mut impl Write) -> io::Result<()> {
+        queue!(
+            out,
+            cursor::MoveTo(0, self.view.height as u16),
+            Clear(ClearType::CurrentLine),
+            Print("-")
+        )?;
+        out.flush()?;
+        loop {
+            let Event::Key(key) = event::read()? else {
+                continue;
+            };
+            if key.kind == KeyEventKind::Release {
+                continue;
+            }
+            match key.code {
+                KeyCode::Char('N') => {
+                    self.line_numbers = !self.line_numbers;
+                    self.message = Some(
+                        if self.line_numbers {
+                            "Line numbers on"
+                        } else {
+                            "Line numbers off"
+                        }
+                        .into(),
+                    );
+                }
+                KeyCode::Esc => {}
+                KeyCode::Char(c) => self.message = Some(format!("Unknown option: -{c}")),
+                _ => {}
+            }
+            return Ok(());
+        }
     }
 
     fn prompt_search(&mut self, out: &mut impl Write, backwards: bool) -> io::Result<()> {
@@ -110,9 +178,26 @@ impl App<'_> {
         Ok(())
     }
 
-    fn repeat_search(&mut self, reverse: bool) {
+    /// Columns available for line content (the gutter takes its share).
+    fn content_width(&self) -> usize {
+        if self.line_numbers {
+            self.view.width.saturating_sub(GUTTER)
+        } else {
+            self.view.width
+        }
+    }
+
+    fn repeat_search(&mut self, reverse: bool, times: usize) {
         match &self.search {
-            Some(s) => self.run_search(s.backwards ^ reverse),
+            Some(s) => {
+                let backwards = s.backwards ^ reverse;
+                for _ in 0..times.max(1) {
+                    self.run_search(backwards);
+                    if self.message.is_some() {
+                        break;
+                    }
+                }
+            }
             None => self.message = Some("No previous search".into()),
         }
     }
@@ -142,7 +227,12 @@ impl App<'_> {
                 Clear(ClearType::CurrentLine)
             )?;
             match self.lines.get(self.view.top + row) {
-                Some(line) => self.draw_content_line(out, line)?,
+                Some(line) => {
+                    if self.line_numbers {
+                        queue!(out, Print(format!("{:>7} ", self.view.top + row + 1)))?;
+                    }
+                    self.draw_content_line(out, line)?;
+                }
                 None => queue!(out, Print("~"))?,
             }
         }
@@ -152,11 +242,13 @@ impl App<'_> {
             Clear(ClearType::CurrentLine)
         )?;
         if let Some(msg) = &self.message {
-            draw_reverse(out, &clip(msg, self.view.width))?;
+            draw_reverse(out, &clip(msg, 0, self.view.width))?;
+        } else if !self.pending.is_empty() {
+            queue!(out, Print(format!(":{}", self.pending)))?;
         } else if self.view.at_end(self.lines.len()) {
             draw_reverse(out, "(END)")?;
         } else if self.show_name {
-            draw_reverse(out, &clip(self.name, self.view.width))?;
+            draw_reverse(out, &clip(self.name, 0, self.view.width))?;
         } else {
             queue!(out, Print(":"))?;
         }
@@ -164,14 +256,15 @@ impl App<'_> {
     }
 
     fn draw_content_line(&self, out: &mut impl Write, line: &str) -> io::Result<()> {
+        let (left, width) = (self.view.left, self.content_width());
         let spans = match &self.search {
             Some(s) => search::char_spans(line, &s.re),
             None => Vec::new(),
         };
         if spans.is_empty() {
-            return queue!(out, Print(clip(line, self.view.width)));
+            return queue!(out, Print(clip(line, left, width)));
         }
-        for (text, highlighted) in segments(line, self.view.width, &spans) {
+        for (text, highlighted) in segments(line, left, width, &spans) {
             if highlighted {
                 draw_reverse(out, &text)?;
             } else {
@@ -182,11 +275,17 @@ impl App<'_> {
     }
 }
 
-/// Split the first `width` chars of `line` into runs of (text, highlighted),
-/// where `spans` are sorted, non-overlapping (start, end) char ranges.
-fn segments(line: &str, width: usize, spans: &[(usize, usize)]) -> Vec<(String, bool)> {
+/// Split the visible window (chars `left..left+width`) of `line` into runs of
+/// (text, highlighted), where `spans` are sorted, non-overlapping
+/// (start, end) char ranges over the whole line.
+fn segments(
+    line: &str,
+    left: usize,
+    width: usize,
+    spans: &[(usize, usize)],
+) -> Vec<(String, bool)> {
     let mut result: Vec<(String, bool)> = Vec::new();
-    for (idx, ch) in line.chars().take(width).enumerate() {
+    for (idx, ch) in line.chars().enumerate().skip(left).take(width) {
         let highlighted = spans.iter().any(|&(s, e)| idx >= s && idx < e);
         match result.last_mut() {
             Some((text, h)) if *h == highlighted => text.push(ch),
@@ -244,10 +343,9 @@ fn read_line(out: &mut impl Write, row: usize, prompt: char) -> io::Result<Optio
     }
 }
 
-/// Truncate a line to the first `width` characters (long lines are chopped,
-/// horizontal scrolling arrives in a later release).
-fn clip(line: &str, width: usize) -> String {
-    line.chars().take(width).collect()
+/// The visible window of a line: chars `left..left+width` (chopped, not wrapped).
+fn clip(line: &str, left: usize, width: usize) -> String {
+    line.chars().skip(left).take(width).collect()
 }
 
 #[cfg(test)]
@@ -256,17 +354,23 @@ mod tests {
 
     #[test]
     fn clip_truncates_by_chars() {
-        assert_eq!(clip("hello", 10), "hello");
-        assert_eq!(clip("hello", 3), "hel");
-        assert_eq!(clip("žluťoučký", 4), "žluť");
-        assert_eq!(clip("", 5), "");
+        assert_eq!(clip("hello", 0, 10), "hello");
+        assert_eq!(clip("hello", 0, 3), "hel");
+        assert_eq!(clip("žluťoučký", 0, 4), "žluť");
+        assert_eq!(clip("", 0, 5), "");
+    }
+
+    #[test]
+    fn clip_honours_left_offset() {
+        assert_eq!(clip("abcdef", 2, 3), "cde");
+        assert_eq!(clip("abcdef", 10, 3), "");
     }
 
     #[test]
     fn segments_split_on_span_borders() {
         let spans = vec![(2, 4)];
         assert_eq!(
-            segments("abcdef", 80, &spans),
+            segments("abcdef", 0, 80, &spans),
             vec![
                 ("ab".to_string(), false),
                 ("cd".to_string(), true),
@@ -279,14 +383,26 @@ mod tests {
     fn segments_respect_width() {
         let spans = vec![(2, 4)];
         assert_eq!(
-            segments("abcdef", 3, &spans),
+            segments("abcdef", 0, 3, &spans),
             vec![("ab".to_string(), false), ("c".to_string(), true)]
+        );
+    }
+
+    #[test]
+    fn segments_shifted_by_left_offset() {
+        let spans = vec![(2, 4)];
+        assert_eq!(
+            segments("abcdef", 3, 80, &spans),
+            vec![("d".to_string(), true), ("ef".to_string(), false)]
         );
     }
 
     #[test]
     fn segments_whole_line_highlighted() {
         let spans = vec![(0, 3)];
-        assert_eq!(segments("abc", 80, &spans), vec![("abc".to_string(), true)]);
+        assert_eq!(
+            segments("abc", 0, 80, &spans),
+            vec![("abc".to_string(), true)]
+        );
     }
 }
