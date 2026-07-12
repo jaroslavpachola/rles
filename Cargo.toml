@@ -1,0 +1,16 @@
+[package]
+name = "rles"
+version = "0.1.0"
+edition = "2024"
+description = "A small terminal pager written in Rust — a less replacement"
+license = "MIT"
+repository = "https://github.com/jaroslavpachola/rles"
+keywords = ["pager", "less", "terminal", "cli"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+crossterm = { version = "0.28", features = ["use-dev-tty"] }
+
+[profile.release]
+lto = true
+strip = true
