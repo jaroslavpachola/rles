@@ -23,7 +23,7 @@ When stdout is not a terminal, `rles` behaves like `cat`, so it is safe in pipel
 ## Install
 
 ```sh
-cargo install --path .
+cargo install rles
 ```
 
 Prebuilt binaries are attached to [GitHub releases](https://github.com/jaroslavpachola/rles/releases).

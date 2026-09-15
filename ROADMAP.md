@@ -1,6 +1,6 @@
 # Roadmap
 
-Shipped releases are documented by their git tags (v0.1.0–v0.5.0). Planned:
+Shipped releases are documented by their git tags (v0.1.0–v0.5.1). Planned:
 
 ## v0.6.0 — line wrapping
 
@@ -29,6 +29,6 @@ Shipped releases are documented by their git tags (v0.1.0–v0.5.0). Planned:
 
 ## v1.0.0 — distribution
 
-- publish to crates.io (`cargo install rles`)
+- ~~publish to crates.io (`cargo install rles`)~~ done in v0.5.1
 - release checklist (changelog, version bump, tag)
 - wider CI targets (musl, ARM Linux)
